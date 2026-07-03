@@ -13,6 +13,13 @@ dependencies = [
     "langgraph>=1.0.3",
     "lxml-html-clean>=0.4.3",
     "newspaper3k>=0.2.8",
+    "pydantic-settings>=2.14.2",
     "python-dotenv>=1.2.1",
     "yfinance>=0.2.66",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-watch>=4.2.0",
 ]

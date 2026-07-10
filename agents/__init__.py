@@ -21,6 +21,7 @@ from agents.market_data_analyst import MarketDataAnalyst
 from agents.fundamentals_analyst import FundamentalsAnalyst
 from agents.news_intelligence_agent import NewsIntelligenceAgent
 from agents.technical_analyst import TechnicalAnalyst
+from agents.debate_moderator import DebateModerator
 
 __all__ = [
     "BaseAgent",
@@ -30,4 +31,5 @@ __all__ = [
     "FundamentalsAnalyst",
     "NewsIntelligenceAgent",
     "TechnicalAnalyst",
+    "DebateModerator",
 ]

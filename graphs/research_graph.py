@@ -1,13 +1,17 @@
 """
 LangGraph research orchestration.
 
-This graph wires the four analyst agents into a parallel execution workflow:
+This graph wires the four analyst agents into a parallel execution workflow,
+then runs inter-agent debate over the completed analyses.
 
     prepare
       -> market_data_analyst
       -> fundamentals_analyst
       -> technical_analyst
       -> news_intelligence_agent
+    begin_debate
+      -> debate_round
+      -> finalize
 """
 
 from __future__ import annotations
@@ -19,13 +23,14 @@ from langgraph.graph import END, START, StateGraph
 
 from agents import (
     BaseAgent,
+    DebateModerator,
     FundamentalsAnalyst,
     MarketDataAnalyst,
     NewsIntelligenceAgent,
     TechnicalAnalyst,
 )
 from config import settings
-from models import AgentAnalysis, ResearchState
+from models import AgentAnalysis, DebateContribution, DebateRound, ResearchState
 from services import FundamentalsProvider, MarketDataProvider, NewsProvider
 
 
@@ -76,6 +81,23 @@ def _run_agent_node(agent: BaseAgent, state: ResearchState) -> dict[str, Any]:
     }
 
 
+def _error_debate_round(state: ResearchState, error: Exception) -> DebateRound:
+    """Build a valid debate round when debate moderation raises."""
+    error_msg = f"debate_moderator: {type(error).__name__}: {error}"
+
+    return DebateRound(
+        round_number=state.current_round + 1,
+        contributions=[
+            DebateContribution(
+                agent_name="debate_moderator",
+                challenge_to=None,
+                message=f"Debate round failed: {error_msg}",
+                supporting_evidence=[],
+            )
+        ],
+    )
+
+
 def build_research_graph(
     llm: BaseLanguageModel,
     market_data_provider: MarketDataProvider | None = None,
@@ -83,7 +105,7 @@ def build_research_graph(
     news_provider: NewsProvider | None = None,
 ):
     """
-    Build the M2.1 research graph.
+    Build the M2.2 research graph.
 
     Args:
         llm: Shared LLM used by all analyst agents.
@@ -92,7 +114,7 @@ def build_research_graph(
         news_provider: Optional injected news provider.
 
     Returns:
-        A compiled LangGraph app.
+        A compiled LangGraph app that produces analyses and debate rounds.
     """
     market_data_agent = MarketDataAnalyst(
         llm=llm,
@@ -110,6 +132,7 @@ def build_research_graph(
         llm=llm,
         news_provider=news_provider,
     )
+    debate_moderator = DebateModerator(llm=llm)
 
     def prepare(state: ResearchState) -> dict[str, Any]:
         return {
@@ -129,6 +152,48 @@ def build_research_graph(
     def run_news(state: ResearchState) -> dict[str, Any]:
         return _run_agent_node(news_agent, state)
 
+    def begin_debate(state: ResearchState) -> dict[str, Any]:
+        return {
+            "phase": "debating",
+            "current_round": 0,
+        }
+
+    def run_debate_round(state: ResearchState) -> dict[str, Any]:
+        try:
+            debate_round = debate_moderator.run_round(state)
+            errors: list[str] = []
+        except Exception as exc:
+            debate_round = _error_debate_round(state, exc)
+            errors = [
+                f"debate_moderator: {type(exc).__name__}: {exc}",
+            ]
+
+        return {
+            "debate_rounds": [
+                debate_round,
+            ],
+            "current_round": state.current_round + 1,
+            "errors": errors,
+        }
+
+    def should_continue_debate(state: ResearchState) -> str:
+        if state.current_round >= state.max_debate_rounds:
+            return "finalize"
+
+        latest_round = state.debate_rounds[-1] if state.debate_rounds else None
+        if latest_round is None:
+            return "finalize"
+
+        has_substantive_challenge = any(
+            contribution.challenge_to is not None
+            for contribution in latest_round.contributions
+        )
+
+        if not has_substantive_challenge:
+            return "finalize"
+
+        return "debate_round"
+
     def finalize(state: ResearchState) -> dict[str, Any]:
         return {
             "phase": "complete",
@@ -141,6 +206,8 @@ def build_research_graph(
     graph.add_node("fundamentals_analyst", run_fundamentals)
     graph.add_node("technical_analyst", run_technical)
     graph.add_node("news_intelligence_agent", run_news)
+    graph.add_node("begin_debate", begin_debate)
+    graph.add_node("debate_round", run_debate_round)
     graph.add_node("finalize", finalize)
 
     graph.add_edge(START, "prepare")
@@ -157,9 +224,18 @@ def build_research_graph(
             "technical_analyst",
             "news_intelligence_agent",
         ],
-        "finalize",
+        "begin_debate",
     )
 
+    graph.add_edge("begin_debate", "debate_round")
+    graph.add_conditional_edges(
+        "debate_round",
+        should_continue_debate,
+        {
+            "debate_round": "debate_round",
+            "finalize": "finalize",
+        },
+    )
     graph.add_edge("finalize", END)
 
     return graph.compile()
@@ -176,10 +252,9 @@ def run_research(
     news_provider: NewsProvider | None = None,
 ) -> ResearchState:
     """
-    Convenience entry point for running M2.1 research.
+    Entry point for running research.
 
-    Returns a ResearchState with four populated analyses.
-    No recommendation is produced in M2.1.
+    Returns a ResearchState with four populated analyses and debate rounds.
     """
     graph = build_research_graph(
         llm=llm,

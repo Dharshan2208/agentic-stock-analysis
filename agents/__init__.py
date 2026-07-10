@@ -5,15 +5,17 @@ Each agent is a BaseAgent subclass registered in the shared registry.
 
 Usage:
     from agents import registry, BaseAgent
-    registry.register(MyAgent(...))
-    state = registry.run_phase(state)
+    from agents.market_data_analyst import MarketDataAnalyst
+    registry.register(MarketDataAnalyst(llm=...))
 """
 
 from agents.base_agent import BaseAgent
 from agents.registry import AgentRegistry, registry
+from agents.market_data_analyst import MarketDataAnalyst
 
 __all__ = [
     "BaseAgent",
     "AgentRegistry",
     "registry",
+    "MarketDataAnalyst",
 ]

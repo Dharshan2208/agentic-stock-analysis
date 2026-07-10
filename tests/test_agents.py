@@ -48,7 +48,7 @@ class MockLLM(BaseLanguageModel):
 # ── Concrete test agent ──
 
 
-class TestAgent(BaseAgent):
+class FakeAgent(BaseAgent):
     """Minimal agent for testing purposes."""
 
     def system_prompt(self) -> str:
@@ -81,14 +81,14 @@ class ErrorAgent(BaseAgent):
 class TestBaseAgent:
     def test_requires_non_empty_name(self):
         with pytest.raises(ValueError, match="non-empty"):
-            TestAgent(name="", description="test", llm=MockLLM())
+            FakeAgent(name="", description="test", llm=MockLLM())
 
     def test_requires_non_empty_description(self):
         with pytest.raises(ValueError, match="non-empty"):
-            TestAgent(name="test", description="", llm=MockLLM())
+            FakeAgent(name="test", description="", llm=MockLLM())
 
     def test_run_writes_to_state(self):
-        agent = TestAgent(name="test_agent", description="Test", llm=MockLLM())
+        agent = FakeAgent(name="test_agent", description="Test", llm=MockLLM())
         state = ResearchState(user_query="test", symbol="AAPL")
         result = agent.run(state)
         assert "test_agent" in result.analyses
@@ -96,7 +96,7 @@ class TestBaseAgent:
         assert result.analyses["test_agent"].summary == "Test analysis result."
 
     def test_run_records_execution_order(self):
-        agent = TestAgent(name="order_test", description="Test", llm=MockLLM())
+        agent = FakeAgent(name="order_test", description="Test", llm=MockLLM())
         state = ResearchState(user_query="test", symbol="AAPL")
         result = agent.run(state)
         assert "order_test" in result.agent_execution_order
@@ -118,27 +118,27 @@ class TestAgentRegistry:
         self.registry = AgentRegistry()
 
     def test_register_and_get(self):
-        agent = TestAgent(name="test", description="Test", llm=MockLLM())
+        agent = FakeAgent(name="test", description="Test", llm=MockLLM())
         self.registry.register(agent)
         assert self.registry.get("test") is agent
 
     def test_register_duplicate_raises(self):
-        agent = TestAgent(name="dup", description="Test", llm=MockLLM())
+        agent = FakeAgent(name="dup", description="Test", llm=MockLLM())
         self.registry.register(agent)
         with pytest.raises(ValueError, match="already registered"):
             self.registry.register(agent)
 
     def test_list_all_returns_in_order(self):
-        a1 = TestAgent(name="first", description="1", llm=MockLLM())
-        a2 = TestAgent(name="second", description="2", llm=MockLLM())
+        a1 = FakeAgent(name="first", description="1", llm=MockLLM())
+        a2 = FakeAgent(name="second", description="2", llm=MockLLM())
         self.registry.register(a1)
         self.registry.register(a2)
         names = [a.name for a in self.registry.list_all()]
         assert names == ["first", "second"]
 
     def test_run_phase_runs_all_agents(self):
-        a1 = TestAgent(name="agent_1", description="A", llm=MockLLM())
-        a2 = TestAgent(name="agent_2", description="B", llm=MockLLM())
+        a1 = FakeAgent(name="agent_1", description="A", llm=MockLLM())
+        a2 = FakeAgent(name="agent_2", description="B", llm=MockLLM())
         self.registry.register(a1)
         self.registry.register(a2)
 
@@ -150,7 +150,7 @@ class TestAgentRegistry:
         assert len(result.analyses) == 2
 
     def test_run_phase_continues_on_failure(self):
-        good = TestAgent(name="good", description="Good", llm=MockLLM())
+        good = FakeAgent(name="good", description="Good", llm=MockLLM())
         bad = ErrorAgent(name="bad", description="Bad", llm=MockLLM())
         self.registry.register(good)
         self.registry.register(bad)
@@ -167,7 +167,7 @@ class TestAgentRegistry:
         assert len(result.errors) == 1
 
     def test_clear(self):
-        agent = TestAgent(name="clear_test", description="T", llm=MockLLM())
+        agent = FakeAgent(name="clear_test", description="T", llm=MockLLM())
         self.registry.register(agent)
         assert self.registry.count() == 1
         self.registry.clear()

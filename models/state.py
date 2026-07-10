@@ -5,6 +5,9 @@ All state flows through these Pydantic models for validation and type safety.
 
 from __future__ import annotations
 
+import operator
+from collections.abc import Mapping
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Annotated
 
@@ -105,6 +108,14 @@ class Recommendation(BaseModel):
     generated_at: datetime = Field(default_factory=datetime.now)
 
 
+def merge_analyses(
+    left: dict[str, AgentAnalysis] | None,
+    right: dict[str, AgentAnalysis] | None,
+) -> dict[str, AgentAnalysis]:
+    """Merge per-agent analyses produced by parallel LangGraph branches."""
+    return {**(left or {}), **(right or {})}
+
+
 # Main Research State
 class ResearchState(BaseModel):
     """
@@ -124,13 +135,15 @@ class ResearchState(BaseModel):
     )
 
     #  Analyses (one entry per agent)
-    analyses: dict[str, AgentAnalysis] = Field(
+    analyses: Annotated[dict[str, AgentAnalysis], merge_analyses] = Field(
         default_factory=dict,
         description="Keyed by agent_name. Each agent writes once.",
     )
 
     #  Debate
-    debate_rounds: list[DebateRound] = Field(default_factory=list)
+    debate_rounds: Annotated[list[DebateRound], operator.add] = Field(
+        default_factory=list
+    )
     max_debate_rounds: int = Field(default=3, ge=1, le=10)
 
     #  Recommendation
@@ -140,8 +153,8 @@ class ResearchState(BaseModel):
     messages: Annotated[list, add_messages] = Field(default_factory=list)
 
     #  Resilience
-    errors: list[str] = Field(default_factory=list)
-    agent_execution_order: list[str] = Field(
+    errors: Annotated[list[str], operator.add] = Field(default_factory=list)
+    agent_execution_order: Annotated[list[str], operator.add] = Field(
         default_factory=list,
         description="Tracks which agents ran and in what order",
     )
@@ -162,4 +175,6 @@ class ResearchState(BaseModel):
     def uppercase_symbol(cls, v: str) -> str:
         return v.strip().upper()
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)  # Needed for LangGraph message type
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True
+    )  # Needed for LangGraph message type

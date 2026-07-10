@@ -7,14 +7,20 @@ Usage:
     from agents import registry, BaseAgent
     from agents.market_data_analyst import MarketDataAnalyst
     from agents.fundamentals_analyst import FundamentalsAnalyst
+    from agents.news_intelligence_agent import NewsIntelligenceAgent
+    from agents.technical_analyst import TechnicalAnalyst
     registry.register(MarketDataAnalyst(llm=...))
     registry.register(FundamentalsAnalyst(llm=...))
+    registry.register(NewsIntelligenceAgent(llm=...))
+    registry.register(TechnicalAnalyst(llm=...))
 """
 
 from agents.base_agent import BaseAgent
 from agents.registry import AgentRegistry, registry
 from agents.market_data_analyst import MarketDataAnalyst
 from agents.fundamentals_analyst import FundamentalsAnalyst
+from agents.news_intelligence_agent import NewsIntelligenceAgent
+from agents.technical_analyst import TechnicalAnalyst
 
 __all__ = [
     "BaseAgent",
@@ -22,4 +28,6 @@ __all__ = [
     "registry",
     "MarketDataAnalyst",
     "FundamentalsAnalyst",
+    "NewsIntelligenceAgent",
+    "TechnicalAnalyst",
 ]

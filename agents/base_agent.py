@@ -19,6 +19,32 @@ from langchain_core.tools import BaseTool
 from models import ResearchState, AgentAnalysis, Signal, ToolCallRecord
 
 
+def extract_llm_text(response_content: Any) -> str:
+    """Normalise an LLM response to plain text.
+
+    ``ChatGoogleGenerativeAI`` (Gemini) returns content as a list of
+    content blocks, e.g. ``[{'type': 'text', 'text': '...'}]``, instead
+    of a plain string.  This helper extracts the textual parts from any
+    format supported by LangChain chat models.
+    """
+    if isinstance(response_content, str):
+        return response_content
+    if isinstance(response_content, list):
+        parts: list[str] = []
+        for block in response_content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return " ".join(parts)
+    if hasattr(response_content, "text"):
+        text = response_content.text
+        return str(text) if text is not None else ""
+    return str(response_content)
+
+
 class BaseAgent(ABC):
     """Abstract base for all financial analyst agents."""
 
@@ -115,9 +141,10 @@ class BaseAgent(ABC):
         ]
 
     def invoke_llm(self, messages: list[dict[str, Any]]) -> str:
-        """Invoke the LLM and return the response content."""
+        """Invoke the LLM and return the response content as plain text."""
         response = self._llm_with_tools.invoke(messages)
-        return response.content if hasattr(response, "content") else str(response)
+        raw = response.content if hasattr(response, "content") else str(response)
+        return extract_llm_text(raw)
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__}: {self.name}>"

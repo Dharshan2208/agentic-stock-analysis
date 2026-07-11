@@ -17,6 +17,7 @@ from typing import Any
 
 from langchain_core.language_models import BaseLanguageModel
 
+from agents.base_agent import extract_llm_text
 from models import AgentAnalysis, Recommendation, ResearchState, Signal
 
 
@@ -365,7 +366,8 @@ class PortfolioSynthesizer:
         ]
 
         response = self.llm.invoke(messages)
-        content = response.content if hasattr(response, "content") else str(response)
+        raw = response.content if hasattr(response, "content") else str(response)
+        content = extract_llm_text(raw)
 
         payload: dict[str, Any] = json.loads(content)
         rationale = payload.get("rationale", "")

@@ -15,7 +15,7 @@ Usage:
     registry.register(TechnicalAnalyst(llm=...))
 """
 
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, extract_llm_text
 from agents.registry import AgentRegistry, registry
 from agents.market_data_analyst import MarketDataAnalyst
 from agents.fundamentals_analyst import FundamentalsAnalyst
@@ -26,6 +26,7 @@ from agents.portfolio_synthesizer import PortfolioSynthesizer
 
 __all__ = [
     "BaseAgent",
+    "extract_llm_text",
     "AgentRegistry",
     "registry",
     "MarketDataAnalyst",

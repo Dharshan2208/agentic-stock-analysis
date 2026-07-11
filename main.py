@@ -1,185 +1,271 @@
-from typing import Annotated,TypedDict,List,Any
+"""
+User-facing CLI entry point for the multi-agent research system.
 
-from langgraph.graph import START, END, StateGraph
-from langgraph.graph.message import add_messages
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.prebuilt import ToolNode
+Usage:
+    uv run python main.py
+
+Type a ticker symbol (e.g. AAPL) or a natural-language query
+(e.g. "Analyze Microsoft") and the system runs the full
+research pipeline (4 analyst agents → debate → synthesis) and
+prints a formatted recommendation.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from datetime import datetime
+
+from colorama import Fore, Style, init as colorama_init
+from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from tools.market import price_ohlcv
-from tools.news import new_summariser
-from tools.fundamentals import fundamentals
-from tools.trend import trend_analysis
-from colorama import Fore,Style
+from config import settings
+from graphs.research_graph import run_research
+from models import Recommendation, ResearchState
 
-from dotenv import load_dotenv
 load_dotenv()
-
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash",
-    temperature=0.23
-)
-
-tools = [price_ohlcv,fundamentals,new_summariser,trend_analysis]
-tool_node = ToolNode(tools)
-llm_with_tools = llm.bind_tools(tools)
-
-SYSTEM_PROMPT = """
-                You are a professional financial analyst. For any user input about a ticker or stock/company you MUST:
-                1) Use ALL available tools to gather evidence:
-                - price_ohlcv: fetch recent market price and OHLCV data (prefer last 10min / intraday / latest candle)
-                - fundamentals: fetch company fundamentals and use all the data.
-                - new_summariser: fetch the recent news and headlines
-                - trend_analysis : fetch the 7 days and 30 days and 200 days trend
-                2) Synthesize the tool outputs into a final recommendation with three possible sentiments: 'bullish', 'bearish', or 'neutral'.
-                3) Return a concise JSON object ONLY (no extra chatter) with these keys:
-                {
-                    "symbol": "<INPUT_SYMBOL>",
-                    "sentiment": "bullish|bearish|neutral",
-                    "confidence": <0-100 integer>,
-                    "rationale": "<2-6 sentence summary tying together price/fundamentals/news>",
-                    "signals": ["signal 1", "signal 2", ...],  # short bullet signals used to decide
-                    "tool_outputs": {
-                        "price_ohlcv": <short summary>,
-                        "fundamentals": <short summary>,
-                        "new_summariser": <short summary>,
-                        "trend_analysis": "<short summary>"
-                    }
-                }
-                4) Provide numeric reasoning (e.g., "% change in price", "PE=xx", "latest headline sentiment") inside the rationale where useful.
-                5) If tools return errors or no data, explicitly show that in tool_outputs and still try to give a cautious recommendation.
-                6) Use a neutral, professional tone. Keep rationale concise and focused on evidence.
-                7) Example output for user 'AAPL':
-                {
-                "symbol":"AAPL",
-                "sentiment":"bullish",
-                "confidence":78,
-                "rationale":"Recent intraday price breakout (+3.2% 1h) combined with improving fundamentals (PE 23 vs sector 28) and positive exec-level news indicate momentum. Volume is above average.",
-                "signals":["price_breakout","improving_PE_vs_sector","positive_news_headlines","above_average_volume"],
-                "tool_outputs":{
-                    "alpaca_price": "...",
-                    "fundamentals": "...",
-                    "new_summariser":"...",
-                    "trend_analysis":"..."
-                }
-                }
-                """
+colorama_init(autoreset=True)
 
 
-# State
-class State(TypedDict):
-    messages: Annotated[List[Any], add_messages]
+# Ticker extraction
 
 
-# Chatbot Node
-def chatbot(state: State):
+def extract_symbol(user_input: str) -> str | None:
+    """Extract a ticker symbol from user input.
+
+    Strategies tried in order:
+      1. Direct match — input is 1–5 uppercase letters (e.g. ``"AAPL"``).
+      2. Bracketed ticker — e.g. ``"Apple (AAPL)"``.
+      3. "Analyze X" pattern.
+      4. Word-boundary uppercase token 2–5 chars long.
+    Returns ``None`` when no symbol can be extracted.
     """
-    LLM node — ensure system prompt is included and invite tool usage.
-    Returns messages expected by the graph (list-like), catching exceptions and returning an assistant error message.
-    """
-    try:
-        messages_with_system = [{"role": "system", "content": SYSTEM_PROMPT}] + state["messages"]
-        response = llm_with_tools.invoke(messages_with_system)
-        return {"messages": [response]}
-    except Exception as e:
+    cleaned = user_input.strip()
+
+    # 1. Direct ticker — all-caps, 1-5 letters
+    if re.fullmatch(r"[A-Z]{1,5}", cleaned.upper()):
+        return cleaned.upper()
+
+    # 2. Bracketed ticker: "Apple (AAPL)"
+    m = re.search(r"\(([A-Za-z]{1,5})\)", cleaned)
+    if m:
+        return m.group(1).upper()
+
+    # 3. "Analyze / research / check X"
+    m = re.search(
+        r"(?:analyze|research|check|about)\s+([A-Za-z]{1,5})\b",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).upper()
+
+    # 4. Any uppercase word 2-5 chars (first match)
+    m = re.search(r"\b([A-Z]{2,5})\b", cleaned)
+    if m:
+        return m.group(1).upper()
+
+    return None
+
+
+# LLM initialisation
+
+
+def _build_llm() -> ChatGoogleGenerativeAI:
+    """Create the Gemini LLM instance used by all agents."""
+    if not settings.has_google_api_key:
+        print(
+            Fore.RED
+            + "ERROR: GOOGLE_API_KEY not set. "
+            + "Create a .env file with:\n\n"
+            + "    GOOGLE_API_KEY=your-key-here\n"
+            + Style.RESET_ALL
+        )
+        sys.exit(1)
+
+    return ChatGoogleGenerativeAI(
+        model=settings.gemini_model,
+        temperature=0.23,
+    )
+
+
+# Output formatting
+
+
+def _format_recommendation(rec: Recommendation) -> str:
+    """Return a colour-formatted investment recommendation string."""
+
+    # Colour helpers
+    def _sentiment_colour(s: str) -> str:
         return {
-            "messages": [{
-                "role": "assistant",
-                "content": {
-                    "error": f"Error in LLM node: {str(e)}"
-                }
-            }]
-        }
+            "bullish": Fore.GREEN,
+            "bearish": Fore.RED,
+            "neutral": Fore.YELLOW,
+        }.get(s, Fore.WHITE)
 
-# Router Node
-def router(state: State):
-    """
-    If last message has tool_calls → go to tools
-    else → end the graph
-    """
-    last_msg = state["messages"][-1]
+    def _risk_colour(r: str) -> str:
+        return {
+            "low": Fore.GREEN,
+            "medium": Fore.YELLOW,
+            "high": Fore.RED,
+        }.get(r, Fore.WHITE)
 
-    if getattr(last_msg, "tool_calls", None):
-        return "tools"
-    return END
+    lines: list[str] = []
 
-# Graph Build
-graph_builder = StateGraph(State)
+    # Header
+    lines.append("")
+    lines.append(f"{Fore.CYAN}{'=' * 58}{Style.RESET_ALL}")
+    lines.append(f"{Fore.CYAN}   INVESTMENT RECOMMENDATION{Style.RESET_ALL}")
+    lines.append(f"{Fore.CYAN}{'=' * 58}{Style.RESET_ALL}")
 
-graph_builder.add_node("chatbot", chatbot)
-graph_builder.add_node("tools", tool_node)
+    # Symbol & sentiment
+    sentiment_colour = _sentiment_colour(rec.sentiment)
+    lines.append(
+        f"  {Fore.WHITE}Symbol:{Style.RESET_ALL}       "
+        f"{Fore.YELLOW}{rec.symbol}{Style.RESET_ALL}"
+    )
+    lines.append(
+        f"  {Fore.WHITE}Sentiment:{Style.RESET_ALL}     "
+        f"{sentiment_colour}{rec.sentiment.upper()}{Style.RESET_ALL}"
+    )
+    lines.append(
+        f"  {Fore.WHITE}Confidence:{Style.RESET_ALL}    "
+        f"{sentiment_colour}{rec.confidence:.0%}{Style.RESET_ALL}"
+    )
+    lines.append(
+        f"  {Fore.WHITE}Risk Level:{Style.RESET_ALL}    "
+        f"{_risk_colour(rec.risk_level)}{rec.risk_level.upper()}{Style.RESET_ALL}"
+    )
+    lines.append(
+        f"  {Fore.WHITE}Timeframe:{Style.RESET_ALL}     "
+        f"{rec.estimated_timeframe.replace('_', ' ')}{Style.RESET_ALL}"
+    )
 
-graph_builder.add_edge(START, "chatbot")
-graph_builder.add_edge("tools", "chatbot")
-graph_builder.add_conditional_edges("chatbot", router)
+    # Rationale
+    lines.append("")
+    lines.append(f"  {Fore.CYAN}Rationale:{Style.RESET_ALL}")
+    lines.append(f"  {rec.rationale}")
 
-memory = InMemorySaver()
-graph = graph_builder.compile(checkpointer=memory)
-
-def safe_print(message):
-    """Ensures output is always readable regardless of type."""
-    if message is None:
-        return ""
-
-    if isinstance(message, str):
-        return message
-
-    if isinstance(message, list):
-        return "\n".join([safe_print(m) for m in message])
-
-    if isinstance(message, dict):
-        import json
-        return json.dumps(message, indent=2)
-
-    # If message is an object with a 'content' attribute, try to fetch it.
-    content = getattr(message, "content", None)
-    if content is not None:
-        return safe_print(content)
-
-    # fallback
-    return str(message)
-
-if __name__ == "__main__":
-    print(Fore.GREEN + "Financial Analyst Chatbot (type a ticker or question, e.g. 'AAPL' or 'What about MSFT?')" + Fore.RESET)
-    while True:
-        try:
-            prompt = input("USER : ").strip()
-            if not prompt:
-                continue
-
-            # Pass user message into graph; configurable thread_id preserved
-            result = graph.invoke(
-                {"messages": [{"role": "user", "content": prompt}]},
-                config={"configurable": {"thread_id": 1234}},
+    # Key signals
+    if rec.key_signals:
+        lines.append("")
+        lines.append(f"  {Fore.CYAN}Key Signals:{Style.RESET_ALL}")
+        for sig in rec.key_signals:
+            icon = {"bullish": "▲", "bearish": "▼", "neutral": "◆"}.get(
+                sig.direction, "•"
+            )
+            sig_colour = _sentiment_colour(sig.direction)
+            lines.append(
+                f"    {sig_colour}{icon}{Style.RESET_ALL}  {sig.name}: {sig.value}"
             )
 
-            # get the last assistant message and robustly print content
-            final_msg = result["messages"][-1]
-            content = getattr(final_msg, "content", final_msg)
+    # Conflicting signals
+    if rec.conflicting_signals:
+        lines.append("")
+        lines.append(f"  {Fore.CYAN}Conflicts & Caveats:{Style.RESET_ALL}")
+        for c in rec.conflicting_signals[:5]:
+            lines.append(f"    {Fore.RED}⚠{Style.RESET_ALL}  {c}")
 
-            # If content is a dict and has "text", extract only that.
-            if isinstance(content, dict) and "text" in content:
-                printable = content["text"]
+    # Timestamp
+    lines.append("")
+    lines.append(
+        f"  {Fore.WHITE}Generated:{Style.RESET_ALL} "
+        f"{rec.generated_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    )
+    lines.append(f"{Fore.CYAN}{'=' * 58}{Style.RESET_ALL}")
+    lines.append("")
 
-            # If content is a list and element contains "text"
-            elif isinstance(content, list) and len(content) > 0:
-                first = content[0]
-                if isinstance(first, dict) and "text" in first:
-                    printable = first["text"]
-                else:
-                    printable = safe_print(content)
+    return "\n".join(lines)
 
-            # fallback
+
+def _format_error_state(state: ResearchState) -> str:
+    """Print errors that occurred during graph execution."""
+    if not state.errors:
+        return ""
+
+    lines: list[str] = [
+        "",
+        f"{Fore.RED}{'─' * 58}{Style.RESET_ALL}",
+        f"{Fore.RED}   ERRORS ENCOUNTERED{Style.RESET_ALL}",
+        f"{Fore.RED}{'─' * 58}{Style.RESET_ALL}",
+    ]
+    for err in state.errors:
+        lines.append(f"  {Fore.RED}⚠{Style.RESET_ALL}  {err}")
+    lines.append(f"{Fore.RED}{'─' * 58}{Style.RESET_ALL}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# Main loop
+
+
+def main() -> None:
+    """Run the interactive research CLI."""
+    llm = _build_llm()
+
+    print("")
+    print(f"{Fore.CYAN}╔{'═' * 56}╗{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}║  Multi-Agent Stock Research System{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}║  Type a ticker (e.g. AAPL) or a question{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}║  Type 'exit' or 'quit' to stop.{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}╚{'═' * 56}╝{Style.RESET_ALL}")
+    print("")
+
+    while True:
+        try:
+            raw = input(f"{Fore.GREEN}You:{Style.RESET_ALL} ").strip()
+            if not raw:
+                continue
+            if raw.lower() in ("exit", "quit", "q"):
+                print(f"{Fore.YELLOW}Exiting. Goodbye!{Style.RESET_ALL}")
+                break
+
+            symbol = extract_symbol(raw)
+            if not symbol:
+                print(
+                    f"  {Fore.RED}Could not identify a ticker symbol in your "
+                    f"input.{Style.RESET_ALL}"
+                )
+                print(
+                    f"  {Fore.YELLOW}Examples: 'AAPL', 'Analyze MSFT', "
+                    f"'What about Google (GOOGL)?'{Style.RESET_ALL}"
+                )
+                continue
+
+            print(f"  {Fore.YELLOW}Researching {symbol}...{Style.RESET_ALL}")
+
+            start = datetime.now()
+            state = run_research(
+                user_query=raw,
+                symbol=symbol,
+                llm=llm,
+            )
+            elapsed = (datetime.now() - start).total_seconds()
+
+            if state.errors:
+                print(_format_error_state(state))
+
+            if state.recommendation:
+                print(_format_recommendation(state.recommendation))
             else:
-                printable = safe_print(content)
+                print(
+                    f"  {Fore.RED}No recommendation was produced. "
+                    f"Check errors above.{Style.RESET_ALL}"
+                )
 
-            # print(content[0]["text"])
-            # printable = safe_print(content)
+            print(f"  {Fore.WHITE}(completed in {elapsed:.1f}s){Style.RESET_ALL}")
+            print("")
 
-            print(Fore.LIGHTYELLOW_EX + printable + Fore.RESET)
         except KeyboardInterrupt:
-            print("\nExiting.")
+            print(f"\n{Fore.YELLOW}Exiting. Goodbye!{Style.RESET_ALL}")
             break
-        except Exception as e:
-            print(Fore.RED + f"Runtime error: {e}" + Fore.RESET)
+        except Exception as exc:
+            print(
+                f"  {Fore.RED}Unexpected error: {type(exc).__name__}: "
+                f"{exc}{Style.RESET_ALL}"
+            )
 
+
+if __name__ == "__main__":
+    main()

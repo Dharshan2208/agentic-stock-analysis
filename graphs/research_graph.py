@@ -122,6 +122,30 @@ def _fallback_recommendation(state: ResearchState, error: Exception) -> Recommen
     )
 
 
+def _should_continue_debate(state: ResearchState) -> str:
+    """Decide whether to run another debate round or move to synthesis.
+
+    Extracted as a module-level function for testability.
+    Returns ``"synthesize"`` when debate is complete, ``"debate_round"`` otherwise.
+    """
+    if state.current_round >= state.max_debate_rounds:
+        return "synthesize"
+
+    latest_round = state.debate_rounds[-1] if state.debate_rounds else None
+    if latest_round is None:
+        return "synthesize"
+
+    has_substantive_challenge = any(
+        contribution.challenge_to is not None
+        for contribution in latest_round.contributions
+    )
+
+    if not has_substantive_challenge:
+        return "synthesize"
+
+    return "debate_round"
+
+
 def build_research_graph(
     llm: BaseLanguageModel,
     market_data_provider: MarketDataProvider | None = None,
@@ -129,7 +153,7 @@ def build_research_graph(
     news_provider: NewsProvider | None = None,
 ):
     """
-    Build the M2.3 research graph.
+    Build the research graph.
 
     Args:
         llm: Shared LLM used by all analyst agents.
@@ -202,22 +226,7 @@ def build_research_graph(
         }
 
     def should_continue_debate(state: ResearchState) -> str:
-        if state.current_round >= state.max_debate_rounds:
-            return "synthesize"
-
-        latest_round = state.debate_rounds[-1] if state.debate_rounds else None
-        if latest_round is None:
-            return "synthesize"
-
-        has_substantive_challenge = any(
-            contribution.challenge_to is not None
-            for contribution in latest_round.contributions
-        )
-
-        if not has_substantive_challenge:
-            return "synthesize"
-
-        return "debate_round"
+        return _should_continue_debate(state)
 
     def synthesize(state: ResearchState) -> dict[str, Any]:
         try:

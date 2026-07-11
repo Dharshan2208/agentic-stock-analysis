@@ -22,6 +22,7 @@ from agents.fundamentals_analyst import FundamentalsAnalyst
 from agents.news_intelligence_agent import NewsIntelligenceAgent
 from agents.technical_analyst import TechnicalAnalyst
 from agents.debate_moderator import DebateModerator
+from agents.portfolio_synthesizer import PortfolioSynthesizer
 
 __all__ = [
     "BaseAgent",
@@ -32,4 +33,5 @@ __all__ = [
     "NewsIntelligenceAgent",
     "TechnicalAnalyst",
     "DebateModerator",
+    "PortfolioSynthesizer",
 ]

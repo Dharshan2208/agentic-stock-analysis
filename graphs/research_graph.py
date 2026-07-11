@@ -2,7 +2,7 @@
 LangGraph research orchestration.
 
 This graph wires the four analyst agents into a parallel execution workflow,
-then runs inter-agent debate over the completed analyses.
+then runs inter-agent debate and synthesizes a final recommendation.
 
     prepare
       -> market_data_analyst
@@ -11,6 +11,7 @@ then runs inter-agent debate over the completed analyses.
       -> news_intelligence_agent
     begin_debate
       -> debate_round
+    synthesize
       -> finalize
 """
 
@@ -27,10 +28,17 @@ from agents import (
     FundamentalsAnalyst,
     MarketDataAnalyst,
     NewsIntelligenceAgent,
+    PortfolioSynthesizer,
     TechnicalAnalyst,
 )
 from config import settings
-from models import AgentAnalysis, DebateContribution, DebateRound, ResearchState
+from models import (
+    AgentAnalysis,
+    DebateContribution,
+    DebateRound,
+    Recommendation,
+    ResearchState,
+)
 from services import FundamentalsProvider, MarketDataProvider, NewsProvider
 
 
@@ -98,6 +106,22 @@ def _error_debate_round(state: ResearchState, error: Exception) -> DebateRound:
     )
 
 
+def _fallback_recommendation(state: ResearchState, error: Exception) -> Recommendation:
+    """Build a conservative recommendation when synthesis fails."""
+    error_msg = f"portfolio_synthesizer: {type(error).__name__}: {error}"
+
+    return Recommendation(
+        symbol=state.symbol,
+        sentiment="neutral",
+        confidence=0.0,
+        rationale=f"Recommendation synthesis failed: {error_msg}",
+        risk_level="high",
+        estimated_timeframe=state.timeframe,
+        key_signals=[],
+        conflicting_signals=[error_msg],
+    )
+
+
 def build_research_graph(
     llm: BaseLanguageModel,
     market_data_provider: MarketDataProvider | None = None,
@@ -105,7 +129,7 @@ def build_research_graph(
     news_provider: NewsProvider | None = None,
 ):
     """
-    Build the M2.2 research graph.
+    Build the M2.3 research graph.
 
     Args:
         llm: Shared LLM used by all analyst agents.
@@ -114,7 +138,7 @@ def build_research_graph(
         news_provider: Optional injected news provider.
 
     Returns:
-        A compiled LangGraph app that produces analyses and debate rounds.
+        A compiled LangGraph app that produces analyses, debate, and a recommendation.
     """
     market_data_agent = MarketDataAnalyst(
         llm=llm,
@@ -133,6 +157,7 @@ def build_research_graph(
         news_provider=news_provider,
     )
     debate_moderator = DebateModerator(llm=llm)
+    portfolio_synthesizer = PortfolioSynthesizer(llm=llm)
 
     def prepare(state: ResearchState) -> dict[str, Any]:
         return {
@@ -178,11 +203,11 @@ def build_research_graph(
 
     def should_continue_debate(state: ResearchState) -> str:
         if state.current_round >= state.max_debate_rounds:
-            return "finalize"
+            return "synthesize"
 
         latest_round = state.debate_rounds[-1] if state.debate_rounds else None
         if latest_round is None:
-            return "finalize"
+            return "synthesize"
 
         has_substantive_challenge = any(
             contribution.challenge_to is not None
@@ -190,9 +215,25 @@ def build_research_graph(
         )
 
         if not has_substantive_challenge:
-            return "finalize"
+            return "synthesize"
 
         return "debate_round"
+
+    def synthesize(state: ResearchState) -> dict[str, Any]:
+        try:
+            recommendation = portfolio_synthesizer.synthesize(state)
+            errors: list[str] = []
+        except Exception as exc:
+            recommendation = _fallback_recommendation(state, exc)
+            errors = [
+                f"portfolio_synthesizer: {type(exc).__name__}: {exc}",
+            ]
+
+        return {
+            "phase": "synthesizing",
+            "recommendation": recommendation,
+            "errors": errors,
+        }
 
     def finalize(state: ResearchState) -> dict[str, Any]:
         return {
@@ -208,6 +249,7 @@ def build_research_graph(
     graph.add_node("news_intelligence_agent", run_news)
     graph.add_node("begin_debate", begin_debate)
     graph.add_node("debate_round", run_debate_round)
+    graph.add_node("synthesize", synthesize)
     graph.add_node("finalize", finalize)
 
     graph.add_edge(START, "prepare")
@@ -233,9 +275,10 @@ def build_research_graph(
         should_continue_debate,
         {
             "debate_round": "debate_round",
-            "finalize": "finalize",
+            "synthesize": "synthesize",
         },
     )
+    graph.add_edge("synthesize", "finalize")
     graph.add_edge("finalize", END)
 
     return graph.compile()
@@ -254,7 +297,7 @@ def run_research(
     """
     Entry point for running research.
 
-    Returns a ResearchState with four populated analyses and debate rounds.
+    Returns a ResearchState with analyses, debate rounds, and a recommendation.
     """
     graph = build_research_graph(
         llm=llm,

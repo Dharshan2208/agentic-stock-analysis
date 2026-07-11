@@ -1,4 +1,4 @@
-"""Tests for the inter-agent debate moderator and M2.2 graph flow."""
+"""Tests for the inter-agent debate moderator and graph flow."""
 
 from __future__ import annotations
 
@@ -181,7 +181,7 @@ def test_debate_uses_llm_fallback_when_no_rule_based_contributions():
     assert "volume confirmation" in round_.contributions[0].message
 
 
-def test_m2_2_graph_runs_debate_without_recommendation():
+def test_m2_3_graph_runs_debate_and_recommendation():
     state = run_research(
         user_query="Analyze AAPL",
         symbol="AAPL",
@@ -195,4 +195,6 @@ def test_m2_2_graph_runs_debate_without_recommendation():
     assert len(state.analyses) == 4
     assert len(state.debate_rounds) >= 1
     assert state.current_round >= 1
-    assert state.recommendation is None
+    assert state.recommendation is not None
+    assert state.recommendation.symbol == "AAPL"
+    assert state.recommendation.sentiment in ("bullish", "bearish", "neutral")

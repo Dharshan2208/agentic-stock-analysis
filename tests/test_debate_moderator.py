@@ -181,7 +181,7 @@ def test_debate_uses_llm_fallback_when_no_rule_based_contributions():
     assert "volume confirmation" in round_.contributions[0].message
 
 
-def test_m2_3_graph_runs_debate_and_recommendation():
+def test_graph_runs_debate_and_recommendation():
     state = run_research(
         user_query="Analyze AAPL",
         symbol="AAPL",

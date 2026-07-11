@@ -1,4 +1,4 @@
-"""Tests for the Portfolio Synthesizer agent (M2.3)."""
+"""Tests for the Portfolio Synthesizer agent."""
 
 from __future__ import annotations
 
